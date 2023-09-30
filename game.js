@@ -24,7 +24,7 @@ if (gl === null) {
 
 SHADERS.load();
 
-const TICK = 0.01;
+const TICK = 1.0 / 120.0;
 
 class Match {
 	constructor(indices, targets, limb) {
@@ -32,6 +32,7 @@ class Match {
 		this.targets = targets.slice();
 		this.limb = limb;
 		this.xScale = 1.0;
+		this.weight = 1.0;
 		let acc = [0,0];
 		for (const t of targets) {
 			acc[0] += t[0];
@@ -55,44 +56,35 @@ class Match {
 		avg[1] /= this.indices.length;
 
 		//want to minimize:
-		// ( [ c -s ] * (ind - avg) - target)^2
-		//   [ s  c ]
+		// ( R * (ind - avg) - target)^2
 
-		//d/dc:
-		// 2 * ([c -s] . (ind - avg) - target.x) * ((ind-avg).x)
-		//+2 * ([s c] . (ind - avg) - target.y) * ((ind-avg).y)
+		//according to https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
+		//this implies:
 
-		//d/ds:
-		// 2 * ([c -s] . (ind - avg) - target.x) * (-(ind-avg).y)
-		//+2 * ([s c] . (ind - avg) - target.y) * ((ind-avg).x)
+		// R = svd((ind-avg) * target^t) -> VU^T
 
-		let dc = {c:0, s:0, one:0};
-		let ds = {c:0, s:0, one:0};
+		let cov = [0,0,0,0]; //n.b. *row* major
 		for (let i = 0; i < this.indices.length; ++i) {
 			const p = positions[this.indices[i]];
 			const t = [this.xScale * this.targets[i][0], this.targets[i][1]];
 			const diff = [p[0]-avg[0], p[1]-avg[1]];
-
-			dc.c +=  diff.x * diff.x + diff.y * diff.y;
-			dc.s += -diff.y * diff.x + diff.x * diff.y;
-			dc.one +=  -t.x * diff.x    - t.y * diff.y;
-
-			ds.c +=  diff.x * -diff.y + diff.y * diff.x;
-			ds.s += -diff.y * -diff.y + diff.x * diff.x;
-			ds.one +=  -t.x * -diff.y    - t.y * diff.x;
+			cov[0] += diff[0] * t[0];
+			cov[1] += diff[0] * t[1];
+			cov[2] += diff[1] * t[0];
+			cov[3] += diff[1] * t[1];
 		}
 
-		//d/dtheta = d/dc @ theta * -sin(theta) + d/ds @ theta * cos(theta)
-		//  (dc.c * cos(theta) + dc.s * sin(theta) + dc.one) * -sin(theta)
-		//+ (ds.c * cos(theta) + ds.s * sin(theta) + ds.one) * cos(theta)
 
-		let dtheta = {
-			ss: -ds.s,
-			cc: ds.c,
-			cs: -dc.c + ds.s,
-			s: -dc.one,
-			c:  ds.one
-		};
+		let svd_ang;
+		{ //2x2 svd from: https://scicomp.stackexchange.com/questions/8899/robust-algorithm-for-2-times-2-svd
+			const E = (cov[0] + cov[3]) / 2;
+			const H = (cov[1] - cov[2]) / 2;
+			const a2 = Math.atan2(H,E);
+			svd_ang = a2;
+		}
+
+
+		/*
 
 		//DEBUG: test angles directly
 		let best = Infinity;
@@ -118,11 +110,11 @@ class Match {
 		}
 
 		console.assert(best_ang !== -1, "something must work");
+		*/
 
-		const c = Math.cos(-best_ang);
-		const s = Math.sin(-best_ang);
+		const c = Math.cos(-svd_ang);
+		const s = Math.sin(-svd_ang);
 
-		//no rotation -- just translate target to avg:
 		return [
 			this.xScale*c,this.xScale*s,
 			-s,c,
@@ -132,6 +124,144 @@ class Match {
 	}
 }
 
+class Capsule {
+	constructor(r,a,b) {
+		this.r = r;
+		this.a = a.slice();
+		this.b = b.slice();
+
+		this.length = Math.sqrt( (this.b[0] - this.a[0]) ** 2 + (this.b[1] - this.a[1]) ** 2);
+
+		this.along = [
+			(this.b[0] - this.a[0]) / this.length,
+			(this.b[1] - this.a[1]) / this.length
+		];
+		this.perp = [
+			-this.along[1],
+			 this.along[0]
+		];
+	}
+
+	collide(p0, p1) {
+		//ray vs capsule (2d), returns description of earliest collision time
+
+		//track earliest intersection time and amount along the line:
+		let t = 2.0;
+		let pt = 0.0;
+
+		//handle segment:
+		const along0 = (p0[0] - this.a[0]) * this.along[0] + (p0[1] - this.a[1]) * this.along[1];
+		const perp0 = (p0[0] - this.a[0]) * this.perp[0] + (p0[1] - this.a[1]) * this.perp[1];
+
+		if (along0 >= 0 && along0 <= this.length && Math.abs(perp0) < this.r) {
+			t = 0.0;
+			pt = along0 / this.length;
+		} else {
+			const along1 = (p1[0] - this.a[0]) * this.along[0] + (p1[1] - this.a[1]) * this.along[1];
+			const perp1 = (p1[0] - this.a[0]) * this.perp[0] + (p1[1] - this.a[1]) * this.perp[1];
+
+			if (perp0 >= this.r && perp1 < this.r) {
+				let tr = (this.r - perp0) / (perp1 - perp0);
+
+				let a = (along1 - along0) * tr + along0;
+
+				if (a >= 0 && a <= this.length) {
+					t = tr;
+					pt = a / this.length;
+				}
+			} else if (perp0 < -this.r && perp1 > -this.r) {
+				let tr = (-this.r - perp0) / (perp1 - perp0);
+
+				let a = (along1 - along0) * tr + along0;
+
+				if (a >= 0 && a <= this.length) {
+					t = tr;
+					pt = a / this.length;
+				}
+			}
+		}
+
+
+		//endpoints:
+		function vs_circle(center, radius) {
+			//(t * (p1 - p0) + p0 - a) ^ 2 = r
+
+			const qc = (p0[0] - center[0]) ** 2 + (p0[1] - center[1]) ** 2 - radius ** 2;
+
+			//intersects at t = 0:
+			if (qc < 0) return 0.0;
+
+			const qa = (p1[0] - p0[0]) ** 2 + (p1[1] - p0[1]) ** 2;
+			const qb = 2 * ( (p1[0] - p0[0]) * (p0[0] - center[0]) + (p1[1] - p0[1]) * (p0[1] - center[1]) );
+
+			const d = qb ** 2 - 4 * qa * qc;
+
+			//never intersects:
+			if (d < 0) return 2.0;
+
+			const t0 = (-qb - Math.sqrt(d)) / (2 * qa);
+			const t1 = (-qb + Math.sqrt(d)) / (2 * qa);
+
+			//this could be cleaner, I think. Only case that matters is t0 >= 0, <= 1 probably
+			if (t0 >= 0.0 && t0 <= 1.0) return t0;
+			if (t1 >= 0.0 && t1 <= 1.0) return t1;
+
+			//no intersection in time range:
+			return 2.0;
+		}
+
+		{
+			const ta = vs_circle(this.a, this.r);
+			if (ta < t) {
+				t = ta;
+				pt = 0.0;
+			}
+		}
+		{
+			const tb = vs_circle(this.b, this.r);
+			if (tb < t) {
+				t = tb;
+				pt = 1.0;
+			}
+		}
+
+		if (t >= 0.0 && t <= 1.0) {
+			const close = [
+				pt * (this.b[0] - this.a[0]) + this.a[0],
+				pt * (this.b[1] - this.a[1]) + this.a[1],
+			];
+			const interp = [
+				t * (p1[0] - p0[0]) + p0[0],
+				t * (p1[1] - p0[1]) + p0[1]
+			];
+			const out = [
+				interp[0] - close[0],
+				interp[1] - close[1]
+			];
+			return {
+				t:t,
+				at:interp,
+				out:out,
+			};
+		}
+
+	}
+}
+
+const TARGET_RAD = 0.7;
+
+class Target {
+	constructor(at) {
+		this.at = at;
+	}
+	check(p) {
+		const dis2 = (p[0] - this.at[0]) ** 2 + (p[1] - this.at[1]) ** 2;
+		return dis2 < TARGET_RAD ** 2;
+	}
+}
+
+const LIMB_SEGS = 5;
+
 class World {
 	constructor() {
 		this.acc = 0.0;
@@ -140,7 +270,8 @@ class World {
 		this.matches = [];
 
 		//per-limb:
-		this.totalLength = 5;
+		this.totalLength = 0.1;
+		this.growToLength = 1;
 		this.limbs = [];
 		for (let l = 0; l < 5; ++l) {
 			this.limbs.push({
@@ -150,12 +281,13 @@ class World {
 		}
 
 		const buildLimb = (limb, angle) => {
-			const SEGS = 2;
+			const SEGS = LIMB_SEGS;
 			const along = [Math.cos(angle), Math.sin(angle)];
 			const perp = [-along[1], along[0]];
 
-			const S = 0.7; //start
+			const S = 0.9; //start
 			const W = 1.0; //segment width (unscaled)
+			const w = (0.5 + limb.length) / SEGS;
 			const R = 0.5; //radius
 
 			let v0 = this.positions.length;
@@ -164,7 +296,7 @@ class World {
 			this.positions.push([S * along[0] + R * perp[0], S * along[1] + R * perp[1]]);
 
 			for (let seg = 0; seg < SEGS; ++seg) {
-				const s = S + W * (seg+1);
+				const s = S + w * (seg+1);
 				let n0 = this.positions.length;
 				this.positions.push([s * along[0] - R * perp[0], s * along[1] - R * perp[1]]);
 				let n1 = this.positions.length;
@@ -180,7 +312,7 @@ class World {
 			}
 
 			{ //the tip:
-				const s = S + W * (SEGS+1);
+				const s = S + w * SEGS + W;
 				let vE = this.positions.length;
 				this.positions.push([s * along[0], s * along[1]]);
 
@@ -188,16 +320,46 @@ class World {
 				let targets = [ [0,-R], [W,0], [0,R] ];
 
 				this.matches.push(new Match(indices, targets));
+				this.matches[this.matches.length-1].weight = 1.0;
 			}
 		};
 
-		for (let l = 0; l < 1 /*DEBUG, was 5*/; ++l) {
+		let bodyIndices = [];
+		for (let l = 0; l < 5; ++l) {
+			bodyIndices.push(this.positions.length);
+			bodyIndices.push(this.positions.length+1);
 			buildLimb(this.limbs[l], (0.05 + l * 0.2) * 2.0 * Math.PI);
 		}
+		let bodyTargets = [];
+		for (let v of bodyIndices) {
+			bodyTargets.push(this.positions[v]);
+		}
+		this.matches.push(new Match(bodyIndices, bodyTargets));
 
 		this.prevPositions = this.positions.slice();
+
+
+		this.capsules = [];
+
+		this.capsules.push(new Capsule(2.0, [-15,0], [-10,-2]) );
+		this.capsules.push(new Capsule(2.0, [-10,-3], [5,-3]) );
+		this.capsules.push(new Capsule(2.0, [5,-3], [10,0]) );
+
+		this.targets = [];
+
+		this.targets.push(new Target([-5, 5]));
+		this.targets.push(new Target([ 5, 0]));
 	}
 	tick() {
+
+		{ //growth:
+			this.totalLength = Math.min(
+				this.growToLength,
+				this.totalLength + TICK / 0.4
+			);
+		}
+
+
 		{ //controls:
 			let total = 0.0;
 			for (const limb of this.limbs) {
@@ -213,10 +375,9 @@ class World {
 
 			for (const match of this.matches) {
 				if (typeof(match.limb) !== 'undefined') {
-					match.xScale = (0.5 + match.limb.length) / 2.0;
+					match.xScale = (0.5 + match.limb.length) / (LIMB_SEGS);
 				}
 			}
-
 		}
 
 		//timestep:
@@ -235,7 +396,7 @@ class World {
 			nextPositions.push(next);
 		}
 
-		{ //vs shape matching:
+		for (let iter = 0; iter < 1; ++iter) { //vs shape matching:
 			const targets = [];
 			for (let i = 0; i < nextPositions.length; ++i) {
 				targets.push([0,0,0]); //accumulators, last is weight
@@ -245,9 +406,10 @@ class World {
 				for (let i = 0; i < match.indices.length; ++i) {
 					const v = match.indices[i];
 					const t = match.targets[i];
-					targets[v][0] += xf[0] * t[0] + xf[2] * t[1] + xf[4];
-					targets[v][1] += xf[1] * t[0] + xf[3] * t[1] + xf[5];
-					targets[v][2] += 1;
+					const w = match.weight;
+					targets[v][0] += w * (xf[0] * t[0] + xf[2] * t[1] + xf[4]);
+					targets[v][1] += w * (xf[1] * t[0] + xf[3] * t[1] + xf[5]);
+					targets[v][2] += w;
 				}
 			}
 			for (let i = 0; i < nextPositions.length; ++i) {
@@ -262,6 +424,7 @@ class World {
 
 		//vs the ground:
 		const COEF = 0.75;
+		/*
 		const GROUND = -2.0;
 		for (let i = 0; i < nextPositions.length; ++i) {
 			const prev = this.positions[i];
@@ -269,10 +432,77 @@ class World {
 			if (pos[1] < GROUND) {
 				if (prev[1] > pos[1]) {
 					prev[1] = GROUND + COEF * (pos[1] - prev[1]);
+					prev[0] = pos[0] + 0.5 * (prev[0] - pos[0]); //friction?
 				}
 				pos[1] = GROUND;
 			}
+		}*/
+
+		//vs ground:
+		for (const capsule of this.capsules) {
+			for (let i = 0; i < nextPositions.length; ++i) {
+				const prev = this.positions[i];
+				const pos = nextPositions[i];
+				const isect = capsule.collide(prev, pos);
+				if (typeof(isect) !== 'undefined') {
+					const invLength = 1.0 / Math.sqrt(isect.out[0] ** 2 + isect.out[1] ** 2);
+					const out = [isect.out[0] * invLength, isect.out[1] * invLength];
+					const perp = [-out[1], out[0]];
+					let vo = (pos[0] - prev[0]) * out[0] + (pos[1] - prev[1]) * out[1];
+					let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
+
+					if (vo < 0.0) {
+						const friction = 0.5 * Math.abs(vo);
+						vo = COEF * -vo;
+
+						if (vp > 0) vp = Math.max(0, vp - friction);
+						else vp = Math.min(0, vp + friction);
+						//vp = 0.9 * vp; //"friction"
+
+						const ofs = (isect.at[0] - pos[0]) * out[0] + (isect.at[1] - pos[1]) * out[1];
+
+						pos[0] += ofs * out[0];
+						pos[1] += ofs * out[1];
+
+						//pos[0] = isect.at[0];
+						//pos[1] = isect.at[1];
+					}
+
+
+					prev[0] = pos[0] - (vo * out[0] + vp * perp[0]);
+					prev[1] = pos[1] - (vo * out[1] + vp * perp[1]);
+				}
+			}
+			
 		}
+
+		//body center:
+		const body = this.matches[this.matches.length-1];
+		const bodyCenter = [0,0];
+		for (let v of body.indices) {
+			bodyCenter[0] += nextPositions[v][0];
+			bodyCenter[1] += nextPositions[v][1];
+		}
+		bodyCenter[0] /= body.indices.length;
+		bodyCenter[1] /= body.indices.length;
+
+
+		//check targets:
+		for (const target of this.targets) {
+			if (target.collected) {
+				target.at[0] = 0.95 * (target.at[0] - bodyCenter[0]) + bodyCenter[0];
+				target.at[1] = 0.95 * (target.at[1] - bodyCenter[1]) + bodyCenter[1];
+			} else {
+				for (let i = 0; i < nextPositions.length; ++i) {
+					const pos = nextPositions[i];
+					if (target.check(pos)) {
+						target.collected = true;
+						this.growToLength += 1;
+					}
+				}
+			}
+		}
+
 
 		this.prevPositions = this.positions;
 		this.positions = nextPositions;
@@ -284,7 +514,7 @@ let WORLD = new World();
 class Camera {
 	constructor() {
 		this.at = [0,2.5];
-		this.radius = 5; //vertical radius
+		this.radius = 10; //vertical radius
 		this.aspect = 1;
 	}
 	makeWorldToClip() {
@@ -340,6 +570,63 @@ function draw() {
 
 	{ //some test drawing stuff:
 		let attribs = [];
+
+		//capsules
+		for (const capsule of WORLD.capsules) {
+			{
+				const C = [0.6,0.6,0.6,1];
+				attribs.push(...capsule.a, ...C);
+				attribs.push(...capsule.b, ...C);
+			}
+			{
+				const C = [1,1,1,1];
+				let prev = [
+					capsule.b[0] + capsule.perp[0] * capsule.r,
+					capsule.b[1] + capsule.perp[1] * capsule.r
+				];
+				for (let a = 0; a <= 10; ++a) {
+					const ang = (a / 10 - 1.5) * Math.PI;
+					const c = Math.cos(ang) * capsule.r;
+					const s = Math.sin(ang) * capsule.r;
+					let pt = [
+						capsule.a[0] + c * capsule.along[0] + s * capsule.perp[0],
+						capsule.a[1] + c * capsule.along[1] + s * capsule.perp[1]
+					];
+					attribs.push(...prev, ...C);
+					attribs.push(...pt, ...C);
+					prev = pt;
+				}
+				for (let a = 0; a <= 10; ++a) {
+					const ang = (a / 10 - 0.5) * Math.PI;
+					const c = Math.cos(ang) * capsule.r;
+					const s = Math.sin(ang) * capsule.r;
+					let pt = [
+						capsule.b[0] + c * capsule.along[0] + s * capsule.perp[0],
+						capsule.b[1] + c * capsule.along[1] + s * capsule.perp[1]
+					];
+					attribs.push(...prev, ...C);
+					attribs.push(...pt, ...C);
+					prev = pt;
+				}
+			}
+		}
+
+		//targets
+		for (const target of WORLD.targets) {
+			const C = [1.0,1.0,0.2,1];
+			let prev = [ target.at[0] + TARGET_RAD, target.at[1] ];
+			for (let a = 1; a <= 20; ++a) {
+				const ang = a / 20 * 2.0 * Math.PI;
+				let pt = [
+					target.at[0] + Math.cos(ang) * TARGET_RAD,
+					target.at[1] + Math.sin(ang) * TARGET_RAD
+				];
+				attribs.push(...prev, ...C);
+				attribs.push(...pt, ...C);
+				prev = pt;
+			}
+		}
+
 
 		{ //limb length targets
 			const c = [
