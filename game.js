@@ -27,9 +27,11 @@ SHADERS.load();
 const TICK = 0.01;
 
 class Match {
-	constructor(indices, targets) {
+	constructor(indices, targets, limb) {
 		this.indices = indices.slice();
 		this.targets = targets.slice();
+		this.limb = limb;
+		this.xScale = 1.0;
 		let acc = [0,0];
 		for (const t of targets) {
 			acc[0] += t[0];
@@ -52,10 +54,78 @@ class Match {
 		avg[0] /= this.indices.length;
 		avg[1] /= this.indices.length;
 
+		//want to minimize:
+		// ( [ c -s ] * (ind - avg) - target)^2
+		//   [ s  c ]
+
+		//d/dc:
+		// 2 * ([c -s] . (ind - avg) - target.x) * ((ind-avg).x)
+		//+2 * ([s c] . (ind - avg) - target.y) * ((ind-avg).y)
+
+		//d/ds:
+		// 2 * ([c -s] . (ind - avg) - target.x) * (-(ind-avg).y)
+		//+2 * ([s c] . (ind - avg) - target.y) * ((ind-avg).x)
+
+		let dc = {c:0, s:0, one:0};
+		let ds = {c:0, s:0, one:0};
+		for (let i = 0; i < this.indices.length; ++i) {
+			const p = positions[this.indices[i]];
+			const t = [this.xScale * this.targets[i][0], this.targets[i][1]];
+			const diff = [p[0]-avg[0], p[1]-avg[1]];
+
+			dc.c +=  diff.x * diff.x + diff.y * diff.y;
+			dc.s += -diff.y * diff.x + diff.x * diff.y;
+			dc.one +=  -t.x * diff.x    - t.y * diff.y;
+
+			ds.c +=  diff.x * -diff.y + diff.y * diff.x;
+			ds.s += -diff.y * -diff.y + diff.x * diff.x;
+			ds.one +=  -t.x * -diff.y    - t.y * diff.x;
+		}
+
+		//d/dtheta = d/dc @ theta * -sin(theta) + d/ds @ theta * cos(theta)
+		//  (dc.c * cos(theta) + dc.s * sin(theta) + dc.one) * -sin(theta)
+		//+ (ds.c * cos(theta) + ds.s * sin(theta) + ds.one) * cos(theta)
+
+		let dtheta = {
+			ss: -ds.s,
+			cc: ds.c,
+			cs: -dc.c + ds.s,
+			s: -dc.one,
+			c:  ds.one
+		};
+
+		//DEBUG: test angles directly
+		let best = Infinity;
+		let best_ang = -1;
+		for (let a = 0; a < 1000; ++a) {
+			const ang = a / 1000.0 * 2.0 * Math.PI;
+			const c = Math.cos(ang);
+			const s = Math.sin(ang);
+
+			let test = 0.0;
+			for (let i = 0; i < this.indices.length; ++i) {
+				const p = positions[this.indices[i]];
+				const t = [this.xScale * this.targets[i][0], this.targets[i][1]];
+				const diff = [p[0]-avg[0],p[1]-avg[1]];
+
+				test += (diff[0] * c + diff[1] * -s - t[0])**2;
+				test += (diff[0] * s + diff[1] *  c - t[1])**2;
+			}
+			if (test < best) {
+				best = test;
+				best_ang = ang;
+			}
+		}
+
+		console.assert(best_ang !== -1, "something must work");
+
+		const c = Math.cos(-best_ang);
+		const s = Math.sin(-best_ang);
+
 		//no rotation -- just translate target to avg:
 		return [
-			1,0,
-			0,1,
+			this.xScale*c,this.xScale*s,
+			-s,c,
 			avg[0], avg[1]
 		];
 
@@ -69,37 +139,85 @@ class World {
 		this.prevPositions = [];
 		this.matches = [];
 
-		this.positions.push([0,0]);
-		this.positions.push([0,1]);
-		this.positions.push([1,0]);
-		this.positions.push([1,1]);
-		this.positions.push([2,0]);
-		this.positions.push([2,1]);
-		this.positions.push([3,0.5]);
+		//per-limb:
+		this.totalLength = 5;
+		this.limbs = [];
+		for (let l = 0; l < 5; ++l) {
+			this.limbs.push({
+				length:this.totalLength/5,
+				grow:false
+			});
+		}
 
-		const addMatch = (...indices) => {
-			let targets = [];
-			for (let v of indices) {
-				targets.push(this.positions[v].slice());
+		const buildLimb = (limb, angle) => {
+			const SEGS = 2;
+			const along = [Math.cos(angle), Math.sin(angle)];
+			const perp = [-along[1], along[0]];
+
+			const S = 0.7; //start
+			const W = 1.0; //segment width (unscaled)
+			const R = 0.5; //radius
+
+			let v0 = this.positions.length;
+			this.positions.push([S * along[0] - R * perp[0], S * along[1] - R * perp[1]]);
+			let v1 = this.positions.length;
+			this.positions.push([S * along[0] + R * perp[0], S * along[1] + R * perp[1]]);
+
+			for (let seg = 0; seg < SEGS; ++seg) {
+				const s = S + W * (seg+1);
+				let n0 = this.positions.length;
+				this.positions.push([s * along[0] - R * perp[0], s * along[1] - R * perp[1]]);
+				let n1 = this.positions.length;
+				this.positions.push([s * along[0] + R * perp[0], s * along[1] + R * perp[1]]);
+
+				let indices = [v0, n0, n1, v1];
+				let targets = [ [0, -R], [W,-R], [W, R], [0, R] ];
+
+				this.matches.push(new Match(indices, targets, limb));
+
+				v0 = n0;
+				v1 = n1;
 			}
-			this.matches.push(new Match(indices, targets));
-		}
 
-		for (let b = 0; b <= 2; b += 2) {
-			addMatch(b+0,b+1,b+3,b+2);
-			/*
-			addMatch(b+0,b+2,b+3);
-			addMatch(b+0,b+3,b+1);
+			{ //the tip:
+				const s = S + W * (SEGS+1);
+				let vE = this.positions.length;
+				this.positions.push([s * along[0], s * along[1]]);
 
-			addMatch(b+1,b+0,b+2);
-			addMatch(b+1,b+2,b+3);
-			*/
+				let indices = [v0, vE, v1];
+				let targets = [ [0,-R], [W,0], [0,R] ];
+
+				this.matches.push(new Match(indices, targets));
+			}
+		};
+
+		for (let l = 0; l < 1 /*DEBUG, was 5*/; ++l) {
+			buildLimb(this.limbs[l], (0.05 + l * 0.2) * 2.0 * Math.PI);
 		}
-		addMatch(4,6,5);
 
 		this.prevPositions = this.positions.slice();
 	}
 	tick() {
+		{ //controls:
+			let total = 0.0;
+			for (const limb of this.limbs) {
+				if (limb.grow) {
+					limb.length += TICK * 10.0;
+				}
+				total += limb.length;
+			}
+			let factor = this.totalLength / total;
+			for (const limb of this.limbs) {
+				limb.length *= factor;
+			}
+
+			for (const match of this.matches) {
+				if (typeof(match.limb) !== 'undefined') {
+					match.xScale = (0.5 + match.limb.length) / 2.0;
+				}
+			}
+
+		}
 
 		//timestep:
 		const nextPositions = [];
@@ -144,7 +262,7 @@ class World {
 
 		//vs the ground:
 		const COEF = 0.75;
-		const GROUND = -1.0;
+		const GROUND = -2.0;
 		for (let i = 0; i < nextPositions.length; ++i) {
 			const prev = this.positions[i];
 			const pos = nextPositions[i];
@@ -222,10 +340,19 @@ function draw() {
 
 	{ //some test drawing stuff:
 		let attribs = [];
-		attribs.push(-1,-1, 1,0,0,1);
-		attribs.push(1,1, 1,0,0,1);
-		attribs.push(-1,1, 1,0,0,1);
-		attribs.push(1,-1, 1,0,0,1);
+
+		{ //limb length targets
+			const c = [
+				CAMERA.at[0] - CAMERA.radius * CAMERA.aspect + 0.1 * CAMERA.radius,
+				CAMERA.at[1] + CAMERA.radius - 0.1 * CAMERA.radius
+			];
+			const G = 0.1 * CAMERA.radius;
+			const C = [1,0,0.5,1];
+			for (let l = 0; l < WORLD.limbs.length; ++l) {
+				attribs.push(c[0] + l * G, c[1], ...C);
+				attribs.push(c[0] + l * G, c[1] - WORLD.limbs[l].length, ...C);
+			}
+		}
 
 		{
 			const R = 0.1;
@@ -312,3 +439,23 @@ function queueUpdate() {
 }
 
 queueUpdate();
+
+function keydown(evt) {
+	if (evt.repeat) /* nothing */;
+	else if (evt.code === 'KeyE') WORLD.limbs[0].grow = true;
+	else if (evt.code === 'KeyW') WORLD.limbs[1].grow = true;
+	else if (evt.code === 'KeyQ') WORLD.limbs[2].grow = true;
+	else if (evt.code === 'KeyA') WORLD.limbs[3].grow = true;
+	else if (evt.code === 'KeyD') WORLD.limbs[4].grow = true;
+}
+
+function keyup(evt) {
+	if      (evt.code === 'KeyE') WORLD.limbs[0].grow = false;
+	else if (evt.code === 'KeyW') WORLD.limbs[1].grow = false;
+	else if (evt.code === 'KeyQ') WORLD.limbs[2].grow = false;
+	else if (evt.code === 'KeyA') WORLD.limbs[3].grow = false;
+	else if (evt.code === 'KeyD') WORLD.limbs[4].grow = false;
+}
+
+window.addEventListener('keydown', keydown);
+window.addEventListener('keyup', keyup);
