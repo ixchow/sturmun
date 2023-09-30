@@ -142,109 +142,28 @@ class Capsule {
 		];
 	}
 
-	collide(p0, p1) {
-		//ray vs capsule (2d), returns description of earliest collision time
+	collide(p) {
+		let along = (p[0] - this.a[0]) * this.along[0] + (p[1] - this.a[1]) * this.along[1];
+		along = Math.max(0, along);
+		along = Math.min(along, this.length);
 
-		//track earliest intersection time and amount along the line:
-		let t = 2.0;
-		let pt = 0.0;
+		const t = along / this.length;
 
-		//handle segment:
-		const along0 = (p0[0] - this.a[0]) * this.along[0] + (p0[1] - this.a[1]) * this.along[1];
-		const perp0 = (p0[0] - this.a[0]) * this.perp[0] + (p0[1] - this.a[1]) * this.perp[1];
+		const close = [
+			t * (this.b[0] - this.a[0]) + this.a[0],
+			t * (this.b[1] - this.a[1]) + this.a[1],
+		];
 
-		if (along0 >= 0 && along0 <= this.length && Math.abs(perp0) < this.r) {
-			t = 0.0;
-			pt = along0 / this.length;
-		} else {
-			const along1 = (p1[0] - this.a[0]) * this.along[0] + (p1[1] - this.a[1]) * this.along[1];
-			const perp1 = (p1[0] - this.a[0]) * this.perp[0] + (p1[1] - this.a[1]) * this.perp[1];
+		const len2 = (p[0] - close[0]) ** 2 + (p[1] - close[1]) ** 2;
 
-			if (perp0 >= this.r && perp1 < this.r) {
-				let tr = (this.r - perp0) / (perp1 - perp0);
+		if (len2 > this.r ** 2) return;
 
-				let a = (along1 - along0) * tr + along0;
+		const len = Math.sqrt(len2);
 
-				if (a >= 0 && a <= this.length) {
-					t = tr;
-					pt = a / this.length;
-				}
-			} else if (perp0 < -this.r && perp1 > -this.r) {
-				let tr = (-this.r - perp0) / (perp1 - perp0);
-
-				let a = (along1 - along0) * tr + along0;
-
-				if (a >= 0 && a <= this.length) {
-					t = tr;
-					pt = a / this.length;
-				}
-			}
-		}
-
-
-		//endpoints:
-		function vs_circle(center, radius) {
-			//(t * (p1 - p0) + p0 - a) ^ 2 = r
-
-			const qc = (p0[0] - center[0]) ** 2 + (p0[1] - center[1]) ** 2 - radius ** 2;
-
-			//intersects at t = 0:
-			if (qc < 0) return 0.0;
-
-			const qa = (p1[0] - p0[0]) ** 2 + (p1[1] - p0[1]) ** 2;
-			const qb = 2 * ( (p1[0] - p0[0]) * (p0[0] - center[0]) + (p1[1] - p0[1]) * (p0[1] - center[1]) );
-
-			const d = qb ** 2 - 4 * qa * qc;
-
-			//never intersects:
-			if (d < 0) return 2.0;
-
-			const t0 = (-qb - Math.sqrt(d)) / (2 * qa);
-			const t1 = (-qb + Math.sqrt(d)) / (2 * qa);
-
-			//this could be cleaner, I think. Only case that matters is t0 >= 0, <= 1 probably
-			if (t0 >= 0.0 && t0 <= 1.0) return t0;
-			if (t1 >= 0.0 && t1 <= 1.0) return t1;
-
-			//no intersection in time range:
-			return 2.0;
-		}
-
-		{
-			const ta = vs_circle(this.a, this.r);
-			if (ta < t) {
-				t = ta;
-				pt = 0.0;
-			}
-		}
-		{
-			const tb = vs_circle(this.b, this.r);
-			if (tb < t) {
-				t = tb;
-				pt = 1.0;
-			}
-		}
-
-		if (t >= 0.0 && t <= 1.0) {
-			const close = [
-				pt * (this.b[0] - this.a[0]) + this.a[0],
-				pt * (this.b[1] - this.a[1]) + this.a[1],
-			];
-			const interp = [
-				t * (p1[0] - p0[0]) + p0[0],
-				t * (p1[1] - p0[1]) + p0[1]
-			];
-			const out = [
-				interp[0] - close[0],
-				interp[1] - close[1]
-			];
-			return {
-				t:t,
-				at:interp,
-				out:out,
-			};
-		}
-
+		return {
+			depth:this.r - len,
+			out:[ (p[0] - close[0]) / len, (p[1] - close[1]) / len ]
+		};
 	}
 }
 
@@ -342,15 +261,18 @@ class World {
 		this.capsules = [];
 
 		this.capsules.push(new Capsule(2.0, [-15,0], [-10,-2]) );
-		this.capsules.push(new Capsule(2.0, [-10,-3], [5,-3]) );
+		this.capsules.push(new Capsule(2.0, [-10,-3], [5,-4]) );
 		this.capsules.push(new Capsule(2.0, [5,-3], [10,0]) );
 
 		this.targets = [];
 
 		this.targets.push(new Target([-5, 5]));
 		this.targets.push(new Target([ 5, 0]));
+
+		this.toDraw = [];
 	}
 	tick() {
+		this.toDraw = [];
 
 		{ //growth:
 			this.totalLength = Math.min(
@@ -439,42 +361,64 @@ class World {
 		}*/
 
 		//vs ground:
-		for (const capsule of this.capsules) {
-			for (let i = 0; i < nextPositions.length; ++i) {
-				const prev = this.positions[i];
-				const pos = nextPositions[i];
-				const isect = capsule.collide(prev, pos);
-				if (typeof(isect) !== 'undefined') {
-					const invLength = 1.0 / Math.sqrt(isect.out[0] ** 2 + isect.out[1] ** 2);
-					const out = [isect.out[0] * invLength, isect.out[1] * invLength];
-					const perp = [-out[1], out[0]];
-					let vo = (pos[0] - prev[0]) * out[0] + (pos[1] - prev[1]) * out[1];
-					let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
-
-					if (vo < 0.0) {
-						const friction = 0.5 * Math.abs(vo);
-						vo = COEF * -vo;
-
-						if (vp > 0) vp = Math.max(0, vp - friction);
-						else vp = Math.min(0, vp + friction);
-						//vp = 0.9 * vp; //"friction"
-
-						const ofs = (isect.at[0] - pos[0]) * out[0] + (isect.at[1] - pos[1]) * out[1];
-
-						pos[0] += ofs * out[0];
-						pos[1] += ofs * out[1];
-
-						//pos[0] = isect.at[0];
-						//pos[1] = isect.at[1];
+		let colliding = [];
+		for (let i = 0; i < nextPositions.length; ++i) {
+			const prev = this.positions[i];
+			const pos = nextPositions[i];
+			let isect;
+			for (const capsule of this.capsules) {
+				let test = capsule.collide(pos);
+				if (typeof(test) !== 'undefined') {
+					if (typeof(isect) === 'undefined' || isect.depth < test.depth) {
+						isect = test;
 					}
-
-
-					prev[0] = pos[0] - (vo * out[0] + vp * perp[0]);
-					prev[1] = pos[1] - (vo * out[1] + vp * perp[1]);
 				}
 			}
-			
+			if (typeof(isect) !== 'undefined') {
+				const out = isect.out;
+				const perp = [-out[1], out[0]];
+				let vo = (pos[0] - prev[0]) * out[0]  + (pos[1] - prev[1]) * out[1];
+				let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
+
+				this.toDraw.push(pos[0], pos[1], 1,0,0,1); //DEBUG
+				this.toDraw.push(pos[0] + out[0], pos[1] + out[1], 1,0,0,1); //DEBUG
+				this.toDraw.push(pos[0], pos[1], 0,1,0,1); //DEBUG
+				this.toDraw.push(pos[0] + perp[0], pos[1] + perp[1], 0,1,0,1); //DEBUG
+
+				if (vo < 0.0) {
+					const friction = 0.5 * Math.abs(vo);
+					vo = COEF * -vo;
+
+					//if (vp > 0) vp = Math.max(0, vp - friction);
+					//else vp = Math.min(0, vp + friction);
+					//vp = 0.5 * vp; //"friction"
+
+					const ofs = 0.99 * isect.depth;
+
+					pos[0] += ofs * out[0];
+					pos[1] += ofs * out[1];
+				}
+
+				{ // "friction"
+					vp *= 0.5;
+				}
+
+				prev[0] = pos[0] - (vo * out[0] + vp * perp[0]);
+				prev[1] = pos[1] - (vo * out[1] + vp * perp[1]);
+			} else {
+				//DEBUG:
+				const r = 0.05;
+				this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+				this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
+				this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
+				this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
+				this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
+				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
+				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
+				this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+			}
 		}
+
 
 		//body center:
 		const body = this.matches[this.matches.length-1];
@@ -569,7 +513,7 @@ function draw() {
 	]);*/
 
 	{ //some test drawing stuff:
-		let attribs = [];
+		let attribs = [...WORLD.toDraw];
 
 		//capsules
 		for (const capsule of WORLD.capsules) {
