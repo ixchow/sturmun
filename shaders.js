@@ -19,6 +19,23 @@ SHADERS.load = function SHADERS_load() {
 			gl_FragColor = vColor;
 		}
 	`);
+	SHADERS.texture = initShaderProgram(gl,`
+		attribute vec4 aPosition;
+		attribute vec3 aTexCoord;
+		uniform mat4 uObjectToClip;
+		varying vec3 vTexCoord;
+		void main() {
+			gl_Position = uObjectToClip * aPosition;
+			vTexCoord = aTexCoord;
+		}
+	`,`
+		uniform sampler2D uTex;
+		varying mediump vec3 vTexCoord;
+		void main() {
+			gl_FragColor = texture2D(uTex, vTexCoord.xy) * vec4(1,1,1,vTexCoord.z);
+		}
+	`);
+
 	SHADERS.solid = initShaderProgram(gl,`
 		attribute vec4 aPosition;
 		attribute vec3 aNormal;

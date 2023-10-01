@@ -23,6 +23,7 @@ if (gl === null) {
 }
 
 SHADERS.load();
+TEXTURES.load();
 
 const TICK = 1.0 / 120.0;
 
@@ -175,6 +176,9 @@ const TARGET_RAD = 0.7;
 class Target {
 	constructor(at) {
 		this.at = at;
+		this.fade = 1.0;
+		this.angle = 0.0;
+		this.acc = 0.0;
 	}
 	check(p) {
 		const dis2 = (p[0] - this.at[0]) ** 2 + (p[1] - this.at[1]) ** 2;
@@ -184,12 +188,20 @@ class Target {
 
 const LIMB_SEGS = 5;
 
+const DEBUG_DRAW = false;
+const TEXTURE_CAPTURE_MODE = false;
+
 class World {
 	constructor(level) {
 		this.acc = 0.0;
 		this.positions = [];
 		this.prevPositions = [];
 		this.matches = [];
+
+		//for each vertex, texture coordinate + blend of vertices:
+		// [uv:[], blend:[idx,wt,idx,wt,idx,wt,...]]
+		this.meshVertices = [];
+		this.meshTristrip = []; //indexed
 
 		//per-limb:
 		this.totalLength = 0.1;
@@ -202,6 +214,9 @@ class World {
 			});
 		}
 
+		//used for computing UV locations for sturmun:
+		let uvPositions = [];
+
 		const buildLimb = (limb, angle) => {
 			const SEGS = LIMB_SEGS;
 			const along = [Math.cos(angle), Math.sin(angle)];
@@ -209,20 +224,42 @@ class World {
 
 			const S = 0.9; //start
 			const W = 1.0; //segment width (unscaled)
+			const UV_W = 0.5; //segment width (uv space)
 			const w = (0.5 + limb.length) / SEGS;
 			const R = 0.5; //radius
 
 			let v0 = this.positions.length;
 			this.positions.push([S * along[0] - R * perp[0], S * along[1] - R * perp[1]]);
+			uvPositions.push([S * along[0] - R * perp[0], S * along[1] - R * perp[1]]);
 			let v1 = this.positions.length;
 			this.positions.push([S * along[0] + R * perp[0], S * along[1] + R * perp[1]]);
+			uvPositions.push([S * along[0] + R * perp[0], S * along[1] + R * perp[1]]);
+
+			this.meshVertices.push({wt:[v0,1.0]});
+			this.meshVertices.push({wt:[v1,1.0]});
+
+
+			if (this.meshTristrip.length) {
+				this.meshTristrip.push(this.meshTristrip[this.meshTristrip.length-1]);
+				this.meshTristrip.push(v0);
+			}
+
+			this.meshTristrip.push(v0, v1);
 
 			for (let seg = 0; seg < SEGS; ++seg) {
 				const s = S + w * (seg+1);
+				const uv_s = S + UV_W * (seg+1);
 				let n0 = this.positions.length;
 				this.positions.push([s * along[0] - R * perp[0], s * along[1] - R * perp[1]]);
+				uvPositions.push([uv_s * along[0] - R * perp[0], uv_s * along[1] - R * perp[1]]);
 				let n1 = this.positions.length;
 				this.positions.push([s * along[0] + R * perp[0], s * along[1] + R * perp[1]]);
+				uvPositions.push([uv_s * along[0] + R * perp[0], uv_s * along[1] + R * perp[1]]);
+
+				this.meshVertices.push({wt:[n0,1.0]});
+				this.meshVertices.push({wt:[n1,1.0]});
+
+				this.meshTristrip.push(n0, n1);
 
 				let indices = [v0, n0, n1, v1];
 				let targets = [ [0, -R], [W,-R], [W, R], [0, R] ];
@@ -235,8 +272,13 @@ class World {
 
 			{ //the tip:
 				const s = S + w * SEGS + W;
+				const uv_s = S + UV_W * SEGS + W;
 				let vE = this.positions.length;
 				this.positions.push([s * along[0], s * along[1]]);
+				uvPositions.push([uv_s * along[0], uv_s * along[1]]);
+
+				this.meshVertices.push({wt:[vE,1.0]});
+				this.meshTristrip.push(vE,vE); //twice to preserve parity
 
 				let indices = [v0, vE, v1];
 				let targets = [ [0,-R], [W,0], [0,R] ];
@@ -258,9 +300,64 @@ class World {
 		}
 		this.matches.push(new Match(bodyIndices, bodyTargets));
 
-		for (let p of this.positions) {
-			p[0] += level.start[0];
-			p[1] += level.start[1];
+		{ //body center:
+			const vC = this.meshVertices.length;
+			this.meshVertices.push({wt:[]});
+			for (let v of bodyIndices) {
+				this.meshVertices[this.meshVertices.length-1].wt.push(v, 1.0 / bodyIndices.length);
+			}
+			console.log(this.meshVertices[this.meshVertices.length-1].wt);
+
+			for (let i = 0; i < bodyIndices.length; ++i) {
+				const v = bodyIndices[i];
+				if (i === 0) this.meshTristrip.push(this.meshTristrip[this.meshTristrip.length-1]);
+				this.meshTristrip.push(vC);
+				if (i === 0) this.meshTristrip.push(this.meshTristrip[this.meshTristrip.length-1]);
+				this.meshTristrip.push(v);
+			}
+			this.meshTristrip.push(vC);
+			this.meshTristrip.push(bodyIndices[0]);
+		}
+
+		//assign uvs:
+		{
+			const S = 0.1;
+			for (const mv of this.meshVertices) {
+				let pos = [0,0];
+				for (let i = 0; i + 1 < mv.wt.length; i += 2) {
+					const src = uvPositions[mv.wt[i]];
+					pos[0] += src[0] * mv.wt[i+1];
+					pos[1] += src[1] * mv.wt[i+1];
+				}
+				mv.uv = [pos[0] * S + 0.5, -pos[1] * S + 0.5];
+			}
+
+			let min = [Infinity, Infinity];
+			let max = [-Infinity,-Infinity];
+			for (const mv of this.meshVertices) {
+				min[0] = Math.min(min[0], mv.uv[0]);
+				min[1] = Math.min(min[1], mv.uv[1]);
+				max[0] = Math.max(max[0], mv.uv[0]);
+				max[1] = Math.max(max[1], mv.uv[1]);
+			}
+
+			console.log(`UV bounds: [${min[0]},${max[0]}]x[${min[1]},${max[1]}]`);
+
+			if (TEXTURE_CAPTURE_MODE) {
+				for (const p of uvPositions) {
+					p[0] = p[0] * S + 0.5;
+					p[1] = p[1] * S + 0.5;
+				}
+				this.positions = uvPositions;
+			}
+		}
+
+
+		if (!TEXTURE_CAPTURE_MODE) {
+			for (let p of this.positions) {
+				p[0] += level.start[0];
+				p[1] += level.start[1];
+			}
 		}
 
 		this.start = level.start.slice(); //remember for camera, I guess
@@ -270,7 +367,6 @@ class World {
 		this.capsules = [];
 
 		for (let c of level.capsules) {
-			console.log(`${JSON.stringify(c.a)} ${JSON.stringify(c.b)}`);
 			this.capsules.push(new Capsule(c.r, c.a, c.b));
 		}
 
@@ -282,8 +378,21 @@ class World {
 
 		this.toDraw = [];
 	}
+
 	tick() {
 		this.toDraw = [];
+
+		if (TEXTURE_CAPTURE_MODE) {
+			this.toDraw.push(0,0, 0,0,0,1);
+			this.toDraw.push(0,1, 0,0,0,1);
+			this.toDraw.push(0,1, 0,0,0,1);
+			this.toDraw.push(1,1, 0,0,0,1);
+			this.toDraw.push(1,1, 0,0,0,1);
+			this.toDraw.push(1,0, 0,0,0,1);
+			this.toDraw.push(1,0, 0,0,0,1);
+			this.toDraw.push(0,0, 0,0,0,1);
+			return;
+		}
 
 		{ //growth:
 			this.totalLength = Math.min(
@@ -380,10 +489,12 @@ class World {
 			let vo = (pos[0] - prev[0]) * out[0]  + (pos[1] - prev[1]) * out[1];
 			let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
 
-			this.toDraw.push(pos[0], pos[1], 1,0,0,1); //DEBUG
-			this.toDraw.push(pos[0] + out[0], pos[1] + out[1], 1,0,0,1); //DEBUG
-			this.toDraw.push(pos[0], pos[1], 0,1,0,1); //DEBUG
-			this.toDraw.push(pos[0] + perp[0], pos[1] + perp[1], 0,1,0,1); //DEBUG
+			if (DEBUG_DRAW) {
+				this.toDraw.push(pos[0], pos[1], 1,0,0,1); //DEBUG
+				this.toDraw.push(pos[0] + out[0], pos[1] + out[1], 1,0,0,1); //DEBUG
+				this.toDraw.push(pos[0], pos[1], 0,1,0,1); //DEBUG
+				this.toDraw.push(pos[0] + perp[0], pos[1] + perp[1], 0,1,0,1); //DEBUG
+			}
 
 			if (vo < 0.0) {
 				const friction = 0.5 * Math.abs(vo);
@@ -423,16 +534,18 @@ class World {
 				resolve(prev, pos, isect);
 				colliding.push(i);
 			} else {
-				//DEBUG:
-				const r = 0.05;
-				this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
-				this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
-				this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
-				this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
-				this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
-				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
-				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
-				this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+				if (DEBUG_DRAW) {
+					//DEBUG:
+					const r = 0.05;
+					this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+					this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
+					this.toDraw.push(pos[0] + r, pos[1] - r, 0,0,1,1);
+					this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
+					this.toDraw.push(pos[0] + r, pos[1] + r, 0,0,1,1);
+					this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
+					this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
+					this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+				}
 			}
 		}
 
@@ -472,7 +585,13 @@ class World {
 			if (target.collected) {
 				target.at[0] = 0.95 * (target.at[0] - bodyCenter[0]) + bodyCenter[0];
 				target.at[1] = 0.95 * (target.at[1] - bodyCenter[1]) + bodyCenter[1];
+				target.angle += 10.0 * TICK;
+				target.fade = Math.max(0, target.fade - TICK / 0.7);
 			} else {
+				target.acc += TICK;
+				target.acc -= Math.floor(target.acc);
+				target.angle = Math.sin(target.acc * Math.PI * 2.0) * 0.2;
+
 				for (let i = 0; i < nextPositions.length; ++i) {
 					const pos = nextPositions[i];
 					if (target.check(pos)) {
@@ -508,7 +627,13 @@ class Camera {
 		]);
 	}
 	reset(world) {
-		//frame world?
+		if (TEXTURE_CAPTURE_MODE) {
+			this.at = [0.5, 0.5];
+			this.radius = 0.6;
+			return;
+		}
+
+		//frame world:
 		this.at = [world.start[0], world.start[1]];
 
 		let min = [Infinity, Infinity];
@@ -608,14 +733,88 @@ function draw() {
 	gl.clearColor(0.25,0.25,0.25,1);
 	gl.clear(gl.COLOR_BUFFER_BIT);
 
+	gl.enable(gl.BLEND);
+	gl.blendEquation(gl.FUNC_ADD);
+	gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
 
 	const worldToClip = CAMERA.makeWorldToClip();
-	/*new Float32Array([
-		1.0, 0.0, 0.0, 0.0,
-		0.0, 1.0, 0.0, 0.0,
-		0.0, 0.0, 1.0, 0.0,
-		0.0, 0.0, 0.0, 1.0
-	]);*/
+
+	{ //draw the sturmun:
+		const skinned = [];
+		for (let mv of WORLD.meshVertices) {
+			let pos = [0,0];
+			for (let i = 0; i + 1 < mv.wt.length; i += 2) {
+				const src = WORLD.positions[mv.wt[i]];
+				pos[0] += mv.wt[i+1] * src[0];
+				pos[1] += mv.wt[i+1] * src[1];
+			}
+			skinned.push(pos[0],pos[1],mv.uv[0],mv.uv[1], 1.0);
+		}
+		const attribs = [];
+		for (const i of WORLD.meshTristrip) {
+			attribs.push(...skinned.slice(i*5, i*5+5));
+		}
+
+		//ALSO targets:
+		for (const target of WORLD.targets) {
+			let at = [ target.at[0], target.at[1] ];
+			const ang = target.angle;
+			let rx = [ Math.cos(ang) * TARGET_RAD, Math.sin(ang) * TARGET_RAD ];
+			let ry = [ -rx[1], rx[0] ];
+
+			const uvMin = [0,0.25];
+			const uvMax = [0.25,0];
+
+			attribs.push(...attribs.slice(attribs.length-5));
+			attribs.push(at[0] - rx[0] - ry[0], at[1] - rx[1] - ry[1],  uvMin[0], uvMin[1], target.fade);
+			attribs.push(...attribs.slice(attribs.length-5));
+
+			attribs.push(at[0] - rx[0] + ry[0], at[1] - rx[1] + ry[1],  uvMin[0], uvMax[1], target.fade);
+			attribs.push(at[0] + rx[0] - ry[0], at[1] + rx[1] - ry[1],  uvMax[0], uvMin[1], target.fade);
+			attribs.push(at[0] + rx[0] + ry[0], at[1] + rx[1] + ry[1],  uvMax[0], uvMax[1], target.fade);
+		}
+
+
+
+
+		const u = {
+			uObjectToClip:worldToClip,
+			uTex:new Uint32Array([0]),
+		};
+		const prog = SHADERS.texture;
+		gl.useProgram(prog);
+
+		setUniforms(prog, u);
+
+		//upload and draw attribs:
+		gl.bindBuffer(gl.ARRAY_BUFFER, MISC_BUFFER);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(attribs), gl.STREAM_DRAW);
+
+
+		const stride = 2*4+3*4;
+		//0 => Position
+		gl.enableVertexAttribArray(0);
+		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+		//1 => Normal
+		gl.disableVertexAttribArray(1);
+		gl.vertexAttrib3f(1, 0.0, 0.0, 1.0);
+		//gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 3*4);
+		//2 => Color
+		gl.disableVertexAttribArray(2);
+		gl.vertexAttrib4f(2, 1.0, 1.0, 1.0, 1.0);
+		//gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 2*4);
+		//3 => TexCoord
+		gl.enableVertexAttribArray(3);
+		gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 2*4);
+
+		gl.bindTexture(gl.TEXTURE_2D, TEXTURES.mun);
+
+
+		gl.drawArrays(gl.TRIANGLE_STRIP, 0, attribs.length/(stride/4));
+
+		gl.bindTexture(gl.TEXTURE_2D, null);
+	}
 
 	{ //some test drawing stuff:
 		let attribs = [...WORLD.toDraw];
@@ -661,6 +860,7 @@ function draw() {
 		}
 
 		//targets
+		if (DEBUG_DRAW)
 		for (const target of WORLD.targets) {
 			const C = [1.0,1.0,0.2,1];
 			let prev = [ target.at[0] + TARGET_RAD, target.at[1] ];
@@ -677,6 +877,7 @@ function draw() {
 		}
 
 
+		if (DEBUG_DRAW)
 		{ //limb length targets
 			const c = [
 				CAMERA.at[0] - CAMERA.radius * CAMERA.aspect + 0.1 * CAMERA.radius,
@@ -690,6 +891,7 @@ function draw() {
 			}
 		}
 
+		if (DEBUG_DRAW)
 		{
 			const R = 0.1;
 			const C = [1,1,1,1];
@@ -701,6 +903,7 @@ function draw() {
 			}
 		}
 
+		if (DEBUG_DRAW)
 		{
 			const R = 0.1;
 			const C = [0.5,0.5,0.5,1];
@@ -724,7 +927,7 @@ function draw() {
 
 		setUniforms(prog, u);
 
-		//upload and draw arrow attribs:
+		//upload and draw attribs:
 		gl.bindBuffer(gl.ARRAY_BUFFER, MISC_BUFFER);
 		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(attribs), gl.STREAM_DRAW);
 
