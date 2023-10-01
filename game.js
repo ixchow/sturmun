@@ -29,10 +29,9 @@ const TICK = 1.0 / 120.0;
 class Match {
 	constructor(indices, targets, limb) {
 		this.indices = indices.slice();
-		this.targets = targets.slice();
-		this.limb = limb;
-		this.xScale = 1.0;
-		this.weight = 1.0;
+
+		this.targets = [];
+
 		let acc = [0,0];
 		for (const t of targets) {
 			acc[0] += t[0];
@@ -40,10 +39,14 @@ class Match {
 		}
 		acc[0] /= targets.length;
 		acc[1] /= targets.length;
+
 		for (const t of targets) {
-			t[0] -= acc[0];
-			t[1] -= acc[1];
+			this.targets.push([t[0] - acc[0], t[1] - acc[1]]);
 		}
+
+		this.limb = limb;
+		this.xScale = 1.0;
+		this.weight = 1.0;
 	}
 	fit(positions) {
 		const avg = [0,0];
@@ -182,7 +185,7 @@ class Target {
 const LIMB_SEGS = 5;
 
 class World {
-	constructor() {
+	constructor(level) {
 		this.acc = 0.0;
 		this.positions = [];
 		this.prevPositions = [];
@@ -255,19 +258,27 @@ class World {
 		}
 		this.matches.push(new Match(bodyIndices, bodyTargets));
 
-		this.prevPositions = this.positions.slice();
+		for (let p of this.positions) {
+			p[0] += level.start[0];
+			p[1] += level.start[1];
+		}
 
+		this.start = level.start.slice(); //remember for camera, I guess
+
+		this.prevPositions = this.positions.slice();
 
 		this.capsules = [];
 
-		this.capsules.push(new Capsule(2.0, [-15,0], [-10,-2]) );
-		this.capsules.push(new Capsule(2.0, [-10,-3], [5,-4]) );
-		this.capsules.push(new Capsule(2.0, [5,-3], [10,0]) );
+		for (let c of level.capsules) {
+			console.log(`${JSON.stringify(c.a)} ${JSON.stringify(c.b)}`);
+			this.capsules.push(new Capsule(c.r, c.a, c.b));
+		}
 
 		this.targets = [];
 
-		this.targets.push(new Target([-5, 5]));
-		this.targets.push(new Target([ 5, 0]));
+		for (let t of level.targets) {
+			this.targets.push(new Target(t));
+		}
 
 		this.toDraw = [];
 	}
@@ -362,6 +373,40 @@ class World {
 
 		//vs ground:
 		let colliding = [];
+
+		const resolve = (prev, pos, isect) => {
+			const out = isect.out;
+			const perp = [-out[1], out[0]];
+			let vo = (pos[0] - prev[0]) * out[0]  + (pos[1] - prev[1]) * out[1];
+			let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
+
+			this.toDraw.push(pos[0], pos[1], 1,0,0,1); //DEBUG
+			this.toDraw.push(pos[0] + out[0], pos[1] + out[1], 1,0,0,1); //DEBUG
+			this.toDraw.push(pos[0], pos[1], 0,1,0,1); //DEBUG
+			this.toDraw.push(pos[0] + perp[0], pos[1] + perp[1], 0,1,0,1); //DEBUG
+
+			if (vo < 0.0) {
+				const friction = 0.5 * Math.abs(vo);
+				vo = COEF * -vo;
+
+				//if (vp > 0) vp = Math.max(0, vp - friction);
+				//else vp = Math.min(0, vp + friction);
+				//vp = 0.5 * vp; //"friction"
+
+				const ofs = 0.99 * isect.depth;
+
+				pos[0] += ofs * out[0];
+				pos[1] += ofs * out[1];
+			}
+
+			{ // "friction"
+				vp *= 0.5;
+			}
+
+			prev[0] = pos[0] - (vo * out[0] + vp * perp[0]);
+			prev[1] = pos[1] - (vo * out[1] + vp * perp[1]);
+		};
+
 		for (let i = 0; i < nextPositions.length; ++i) {
 			const prev = this.positions[i];
 			const pos = nextPositions[i];
@@ -375,36 +420,8 @@ class World {
 				}
 			}
 			if (typeof(isect) !== 'undefined') {
-				const out = isect.out;
-				const perp = [-out[1], out[0]];
-				let vo = (pos[0] - prev[0]) * out[0]  + (pos[1] - prev[1]) * out[1];
-				let vp = (pos[0] - prev[0]) * perp[0] + (pos[1] - prev[1]) * perp[1];
-
-				this.toDraw.push(pos[0], pos[1], 1,0,0,1); //DEBUG
-				this.toDraw.push(pos[0] + out[0], pos[1] + out[1], 1,0,0,1); //DEBUG
-				this.toDraw.push(pos[0], pos[1], 0,1,0,1); //DEBUG
-				this.toDraw.push(pos[0] + perp[0], pos[1] + perp[1], 0,1,0,1); //DEBUG
-
-				if (vo < 0.0) {
-					const friction = 0.5 * Math.abs(vo);
-					vo = COEF * -vo;
-
-					//if (vp > 0) vp = Math.max(0, vp - friction);
-					//else vp = Math.min(0, vp + friction);
-					//vp = 0.5 * vp; //"friction"
-
-					const ofs = 0.99 * isect.depth;
-
-					pos[0] += ofs * out[0];
-					pos[1] += ofs * out[1];
-				}
-
-				{ // "friction"
-					vp *= 0.5;
-				}
-
-				prev[0] = pos[0] - (vo * out[0] + vp * perp[0]);
-				prev[1] = pos[1] - (vo * out[1] + vp * perp[1]);
+				resolve(prev, pos, isect);
+				colliding.push(i);
 			} else {
 				//DEBUG:
 				const r = 0.05;
@@ -416,6 +433,25 @@ class World {
 				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
 				this.toDraw.push(pos[0] - r, pos[1] + r, 0,0,1,1);
 				this.toDraw.push(pos[0] - r, pos[1] - r, 0,0,1,1);
+			}
+		}
+
+		for (let iter = 0; iter < 10; ++iter) {
+			for (let i of colliding) {
+				const prev = this.positions[i];
+				const pos = nextPositions[i];
+				let isect;
+				for (const capsule of this.capsules) {
+					let test = capsule.collide(pos);
+					if (typeof(test) !== 'undefined') {
+						if (typeof(isect) === 'undefined' || isect.depth < test.depth) {
+							isect = test;
+						}
+					}
+				}
+				if (typeof(isect) !== 'undefined') {
+					resolve(prev, pos, isect);
+				}
 			}
 		}
 
@@ -453,17 +489,17 @@ class World {
 	}
 };
 
-let WORLD = new World();
+let WORLD = new World({start:[0,0], targets:[], capsules:[]});
 
 class Camera {
 	constructor() {
 		this.at = [0,2.5];
-		this.radius = 10; //vertical radius
+		this.radius = 10; //square radius
 		this.aspect = 1;
 	}
 	makeWorldToClip() {
-		const sx = 2.0 / (2.0 * this.radius * this.aspect);
-		const sy = 2.0 / (2.0 * this.radius);
+		const sx = 2.0 / (2.0 * this.radius * Math.max(1, this.aspect) );
+		const sy = 2.0 / (2.0 * this.radius * Math.max(1, 1 / this.aspect) );
 		return new Float32Array([
 			sx, 0.0, 0.0, 0.0,
 			0.0, sy, 0.0, 0.0,
@@ -471,9 +507,78 @@ class Camera {
 			sx * -this.at[0], sy * -this.at[1], 0.0, 1.0
 		]);
 	}
+	reset(world) {
+		//frame world?
+		this.at = [world.start[0], world.start[1]];
+
+		let min = [Infinity, Infinity];
+		let max = [-Infinity, -Infinity];
+
+		function expand(x,y,r) {
+			if (typeof(r) === 'undefined') r = 0;
+			min[0] = Math.min(min[0], x - r);
+			min[1] = Math.min(min[1], y - r);
+			max[0] = Math.max(max[0], x + r);
+			max[1] = Math.max(max[1], y + r);
+		}
+
+		expand(world.start[0], world.start[1], 2);
+		for (const t of world.targets) {
+			expand(t.at[0], t.at[1], TARGET_RAD);
+		}
+
+		for (const c of world.capsules) {
+			expand(c.a[0], c.a[1], c.r);
+			expand(c.b[0], c.b[1], c.r);
+		}
+
+
+		this.at = [(min[0] + max[0])/2, (min[1] + max[1])/2];
+		this.radius = 0.5 * Math.max(max[0] - min[0], max[1] - min[1]);
+
+		this.radius = Math.max(this.radius, 7.0);
+
+	}
 };
 
 let CAMERA = new Camera();
+
+
+//level handling based on amoeba escape:
+
+let maxLevel = 0;
+let currentLevel;
+
+function setLevel(idx) {
+	if (currentLevel !== idx) {
+		if (history && history.replaceState) history.replaceState({},"","?" + idx);
+	}
+	currentLevel = idx;
+	maxLevel = Math.max(maxLevel, currentLevel);
+	/*
+	if (LEVELS[currentLevel].picture) {
+		picture = LEVELS[currentLevel].picture;
+		board = null;
+		isEnd = (LEVELS[currentLevel].isEnd ? true : false);
+	} else {
+		picture = null;
+	*/
+	WORLD = new World(LEVELS[currentLevel]);
+	CAMERA.reset(WORLD);
+
+	/*
+		isEnd = false;
+	}
+	*/
+}
+
+if (document.location.search.match(/^\?\d+/)) {
+	setLevel(parseInt(document.location.search.substr(1)));
+} else {
+	setLevel(0);
+}
+
+
 
 function update(elapsed) {
 	elapsed = Math.min(elapsed, 0.1);
