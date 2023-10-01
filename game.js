@@ -24,6 +24,7 @@ if (gl === null) {
 
 SHADERS.load();
 TEXTURES.load();
+AUDIO.load();
 
 const TICK = 1.0 / 120.0;
 
@@ -740,9 +741,18 @@ if (document.location.search.match(/^\?\d+/)) {
 }
 
 
+update.maxPending = 0;
 
 function update(elapsed) {
 	elapsed = Math.min(elapsed, 0.1);
+
+	const pending = TEXTURES.pending + AUDIO.pending;
+	update.maxPending = Math.max(update.maxPending, pending);
+	if (pending > 0) {
+		loadDraw(1.0 - (pending / update.maxPending));
+		queueUpdate();
+		return;
+	}
 
 	TITLE.acc += elapsed / 2.4;
 	TITLE.acc -= Math.floor(TITLE.acc);
@@ -768,6 +778,12 @@ function update(elapsed) {
 const RECTS = {};
 
 const MISC_BUFFER = gl.createBuffer();
+
+function loadDraw(amount) {
+	const C = (0.25 - 0.0) * amount + 1.0;
+	gl.clearColor(C,C,C,1);
+	gl.clear(gl.COLOR_BUFFER_BIT);
+}
 
 function draw() {
 	const size = {
@@ -1045,7 +1061,14 @@ function draw() {
 		//reset:
 		rect([537,0], [485,132], 0.6, [0,1], [-rx+M,ry-M], "reset");
 
-		if (WORLD.won || currentLevel < maxLevel) {
+
+		//mute:
+		rect([586,150], [134,123], 0.6 * (134/485), [1, 1], [rx-0.5*M, ry-0.5*M],"mute");
+		if (AUDIO.muted) {
+			rect([752,150], [135,123], 0.6 * (134/485), [1, 1], [rx-0.5*M, ry-0.5*M]);
+		}
+
+		if ((WORLD.won && currentLevel + 1 < LEVELS.length) || currentLevel < maxLevel) {
 			//next:
 			rect([0,0], [522,131], 0.6, [1,0], [rx-M,-ry+M], "next");
 		}
@@ -1067,10 +1090,31 @@ function draw() {
 			d[0] += Math.cos(ang * 2) * 0.005;
 			d[1] += Math.sin(ang * 4) * 0.005;
 			rect([247,650], [438,55], 2.0 * (438/778), [0.5,0.5], [0.0+d[0],0.05+0.2+d[1]]);
-
 		}
 
-		if (currentLevel == 0 || currentLevel == 1) {
+		if (currentLevel + 1 == LEVELS.length) {
+			const ang = TITLE.acc * Math.PI * 2;
+			let d = [Math.cos(ang * 3) * 0.01, Math.sin(ang * 5) * 0.005];
+
+			//"dance"
+			rect([64,734], [422,217], 1.3, [0.5,0], [0 + d[0],0.3 + d[1]]);
+			d = [0,0];
+			//"[dance!]"
+			rect([64,673], [116,42], 1.3 * (116/422), [0.5, 0.5], [0.20, 0.77]);
+
+			d[0] += Math.cos(ang * 2) * 0.005;
+			d[1] += Math.sin(ang * 4) * 0.005;
+
+			rect([165,956], [161,32], 1.3 * (161/422), [0.5, 0.5], [0.0+d[0], 0.4+d[1]]);
+		}
+
+		if (currentLevel == 0 || currentLevel + 1 == LEVELS.length) {
+			//TCHOW info:
+			rect([848,510], [136,82], 0.4, [0.5, 0], [0.0, -ry+0.5*M],"tchow");
+		}
+
+
+		if (currentLevel == 1) {
 			rect([730,697], [224,173], 0.7, [0, 0.7], [-rx+M, 0]);
 			rect([550,711], [133,140], 0.7 * (133 / 244), [1, 0.7], [rx-M, 0]);
 		}
@@ -1191,6 +1235,8 @@ function setMouse(evt) {
 	MOUSE.overReset = inRect("reset");
 	MOUSE.overNext = inRect("next");
 	MOUSE.overPrev = inRect("prev");
+	MOUSE.overTCHOW = inRect("tchow");
+	MOUSE.overMute = inRect("mute");
 }
 
 function handleDown() {
@@ -1202,6 +1248,10 @@ function handleDown() {
 		next();
 	} else if (MOUSE.overPrev) {
 		prev();
+	} else if (MOUSE.overTCHOW) {
+		window.open('http://tchow.com', '_blank').focus();
+	} else if (MOUSE.overMute) {
+		AUDIO.mute();
 	}
 }
 

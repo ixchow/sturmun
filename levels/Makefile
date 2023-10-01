@@ -6,7 +6,10 @@ all : ../levels.js
 		level-star.json \
 		level-hill.json \
 		level-reach.json \
-		level-gaps.json
+		level-gaps.json \
+		level-climb.json \
+		level-ending.json \
+
 	echo 'const LEVELS = [' > '$@'
 	cat level-title.json >> '$@'
 	echo ',' >> '$@'
@@ -16,7 +19,11 @@ all : ../levels.js
 	echo ',' >> '$@'
 	cat level-reach.json >> '$@'
 	echo ',' >> '$@'
+	cat level-climb.json >> '$@'
+	echo ',' >> '$@'
 	cat level-gaps.json >> '$@'
+	echo ',' >> '$@'
+	cat level-ending.json >> '$@'
 	echo '];' >> '$@'
 
 %.json : %.svg make-levels.py

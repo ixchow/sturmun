@@ -2,11 +2,13 @@
 
 //This file based on "textures.js" from https://github.com/ixchow/on-forgetting
 
-const TEXTURES = {};
+const TEXTURES = { };
 
 
 //based on: https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/Tutorial/Using_textures_in_WebGL
 function loadTexture(gl, url) {
+	TEXTURES.pending += 1;
+
 	const texture = gl.createTexture();
 	gl.bindTexture(gl.TEXTURE_2D, texture);
 
@@ -44,9 +46,9 @@ function loadTexture(gl, url) {
 	return texture;
 }
 
-TEXTURES.pending = 1;
 
 TEXTURES.load = function TEXTURES_load() {
+	TEXTURES.pending = 0;
 	TEXTURES.mun = loadTexture(gl, "mun.png");
 	TEXTURES.text = loadTexture(gl, "text.png");
 };
