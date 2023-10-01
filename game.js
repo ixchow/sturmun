@@ -309,7 +309,6 @@ class World {
 			for (let v of bodyIndices) {
 				this.meshVertices[this.meshVertices.length-1].wt.push(v, 1.0 / bodyIndices.length);
 			}
-			console.log(this.meshVertices[this.meshVertices.length-1].wt);
 
 			for (let i = 0; i < bodyIndices.length; ++i) {
 				const v = bodyIndices[i];
@@ -344,7 +343,7 @@ class World {
 				max[1] = Math.max(max[1], mv.uv[1]);
 			}
 
-			console.log(`UV bounds: [${min[0]},${max[0]}]x[${min[1]},${max[1]}]`);
+			//console.log(`UV bounds: [${min[0]},${max[0]}]x[${min[1]},${max[1]}]`);
 
 			if (TEXTURE_CAPTURE_MODE) {
 				for (const p of uvPositions) {
