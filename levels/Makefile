@@ -1,15 +1,22 @@
 
 all : ../levels.js
 
-../levels.js : Makefile level0.json level1.json level2.json level3.json
+../levels.js : Makefile \
+		level-title.json \
+		level-star.json \
+		level-hill.json \
+		level-reach.json \
+		level-gaps.json
 	echo 'const LEVELS = [' > '$@'
-	cat level0.json >> '$@'
+	cat level-title.json >> '$@'
 	echo ',' >> '$@'
-	cat level1.json >> '$@'
+	cat level-star.json >> '$@'
 	echo ',' >> '$@'
-	cat level2.json >> '$@'
+	cat level-hill.json >> '$@'
 	echo ',' >> '$@'
-	cat level3.json >> '$@'
+	cat level-reach.json >> '$@'
+	echo ',' >> '$@'
+	cat level-gaps.json >> '$@'
 	echo '];' >> '$@'
 
 %.json : %.svg make-levels.py

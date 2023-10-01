@@ -175,10 +175,10 @@ const TARGET_RAD = 0.7;
 
 class Target {
 	constructor(at) {
-		this.at = at;
+		this.at = at.slice();
 		this.fade = 1.0;
 		this.angle = 0.0;
-		this.acc = 0.0;
+		this.acc = Math.random();
 	}
 	check(p) {
 		const dis2 = (p[0] - this.at[0]) ** 2 + (p[1] - this.at[1]) ** 2;
@@ -197,6 +197,8 @@ class World {
 		this.positions = [];
 		this.prevPositions = [];
 		this.matches = [];
+
+		this.won = false;
 
 		//for each vertex, texture coordinate + blend of vertices:
 		// [uv:[], blend:[idx,wt,idx,wt,idx,wt,...]]
@@ -581,6 +583,8 @@ class World {
 
 
 		//check targets:
+		const oldWon = this.won;
+		this.won = true;
 		for (const target of this.targets) {
 			if (target.collected) {
 				target.at[0] = 0.95 * (target.at[0] - bodyCenter[0]) + bodyCenter[0];
@@ -588,6 +592,7 @@ class World {
 				target.angle += 10.0 * TICK;
 				target.fade = Math.max(0, target.fade - TICK / 0.7);
 			} else {
+				this.won = false;
 				target.acc += TICK;
 				target.acc -= Math.floor(target.acc);
 				target.angle = Math.sin(target.acc * Math.PI * 2.0) * 0.2;
@@ -600,6 +605,9 @@ class World {
 					}
 				}
 			}
+		}
+		if (!oldWon && this.won) {
+			console.log("won");
 		}
 
 
@@ -669,6 +677,12 @@ class Camera {
 let CAMERA = new Camera();
 
 
+const TITLE = {
+	active:true,
+	visible:0,
+	acc:Math.random(),
+};
+
 //level handling based on amoeba escape:
 
 let maxLevel = 0;
@@ -691,10 +705,32 @@ function setLevel(idx) {
 	WORLD = new World(LEVELS[currentLevel]);
 	CAMERA.reset(WORLD);
 
+	if (currentLevel === 0) {
+		TITLE.active = true;
+	} else {
+		TITLE.active = false;
+	}
+
 	/*
 		isEnd = false;
 	}
 	*/
+}
+
+function next() {
+	if ((WORLD.won || currentLevel < maxLevel) && currentLevel + 1 < LEVELS.length) {
+		setLevel(currentLevel + 1);
+	}
+}
+
+function prev() {
+	if (currentLevel > 0) {
+		setLevel(currentLevel - 1);
+	}
+}
+
+function reset() {
+	setLevel(currentLevel);
 }
 
 if (document.location.search.match(/^\?\d+/)) {
@@ -708,6 +744,14 @@ if (document.location.search.match(/^\?\d+/)) {
 function update(elapsed) {
 	elapsed = Math.min(elapsed, 0.1);
 
+	TITLE.acc += elapsed / 2.4;
+	TITLE.acc -= Math.floor(TITLE.acc);
+	if (TITLE.active) {
+		TITLE.visible = Math.min(1.0, TITLE.visible + elapsed / 1.1);
+	} else {
+		TITLE.visible = Math.max(0.0, TITLE.visible - elapsed / 0.7);
+	}
+
 	WORLD.acc += elapsed;
 	while (WORLD.acc > 0.0) {
 		WORLD.tick();
@@ -720,6 +764,8 @@ function update(elapsed) {
 
 	queueUpdate();
 }
+
+const RECTS = {};
 
 const MISC_BUFFER = gl.createBuffer();
 
@@ -950,6 +996,131 @@ function draw() {
 		gl.drawArrays(gl.LINES, 0, attribs.length/(stride/4));
 	}
 
+
+	{ //Overlays:
+		const aspect = CAMERA.aspect;
+		const sx = Math.min(1.0 / aspect, 1.0);
+		const sy = Math.min(1.0, aspect);
+		const rx = 1.0 / sx;
+		const ry = 1.0 / sy;
+
+		const attribs = [];
+
+		function rect(minPX,sizePX, width, anchor, anchorAt, name) {
+
+			const minUV = [minPX[0] / 1024.0, (minPX[1] + sizePX[1]) / 1024.0];
+			const maxUV = [(minPX[0] + sizePX[0]) / 1024.0, minPX[1] / 1024.0];
+
+			const size = [
+				width,
+				width * sizePX[1] / sizePX[0]
+			];
+
+			const rel = [size[0] * anchor[0], size[1] * anchor[1]];
+
+			const min = [anchorAt[0] - rel[0], anchorAt[1] - rel[1]];
+			const max = [min[0] + size[0], min[1] + size[1]];
+
+			//store in clip coords (where mouse is also stored):
+			RECTS[name] = {
+				min:[min[0] * sx * 0.5 + 0.5, min[1] * sy * 0.5 + 0.5],
+				max:[max[0] * sx * 0.5 + 0.5, max[1] * sy * 0.5 + 0.5]
+			};
+
+
+			const dup = (attribs.length !== 0);
+			if (dup) attribs.push(...attribs.slice(attribs.length-5));
+			attribs.push(min[0], min[1], minUV[0], minUV[1], 1.0);
+			if (dup) attribs.push(...attribs.slice(attribs.length-5));
+			attribs.push(min[0], max[1], minUV[0], maxUV[1], 1.0);
+			attribs.push(max[0], min[1], maxUV[0], minUV[1], 1.0);
+			attribs.push(max[0], max[1], maxUV[0], maxUV[1], 1.0);
+		}
+
+		const M = 0.04;
+
+		delete RECTS["reset"];
+		delete RECTS["next"];
+
+		//reset:
+		rect([537,0], [485,132], 0.6, [0,1], [-rx+M,ry-M], "reset");
+
+		if (WORLD.won || currentLevel < maxLevel) {
+			//next:
+			rect([0,0], [522,131], 0.6, [1,0], [rx-M,-ry+M], "next");
+		}
+
+		if (currentLevel > 0) {
+			rect([6,140], [509,132], 0.6 * (509/522), [0,0], [-rx+M,-ry+M], "prev");
+		}
+
+		if (TITLE.visible > 0) { //title:
+			const ang = TITLE.acc * Math.PI * 2;
+			let d = [Math.cos(ang * 3) * 0.01, Math.sin(ang * 5) * 0.005];
+			d[1] += 1.0 * (1 - TITLE.visible ** 0.5);
+
+			rect([68,408], [778,235], 2.0, [0.5,0], [0 + d[0],0.2 + d[1]]);
+			d = [0,0];
+			d[1] += 1.0 * (1 - TITLE.visible ** 0.5);
+			rect([687,355], [146,41], 2.0 * (146/778), [0.5,0.5], [0.50+d[0],0.52+0.2+d[1]]);
+
+			d[0] += Math.cos(ang * 2) * 0.005;
+			d[1] += Math.sin(ang * 4) * 0.005;
+			rect([247,650], [438,55], 2.0 * (438/778), [0.5,0.5], [0.0+d[0],0.05+0.2+d[1]]);
+
+		}
+
+		if (currentLevel == 0 || currentLevel == 1) {
+			rect([730,697], [224,173], 0.7, [0, 0.7], [-rx+M, 0]);
+			rect([550,711], [133,140], 0.7 * (133 / 244), [1, 0.7], [rx-M, 0]);
+		}
+
+		window.DEBUG = {rx, ry};
+
+		const u = {
+			uObjectToClip:new Float32Array([
+				sx, 0.0, 0.0, 0.0,
+				0.0, sy, 0.0, 0.0,
+				0.0, 0.0, 1.0, 0.0,
+				0.0, 0.0, 0.0, 1.0
+			]),
+			uTex:new Uint32Array([0]),
+		};
+
+		const prog = SHADERS.texture;
+		gl.useProgram(prog);
+
+		setUniforms(prog, u);
+
+		//upload and draw attribs:
+		gl.bindBuffer(gl.ARRAY_BUFFER, MISC_BUFFER);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(attribs), gl.STREAM_DRAW);
+
+
+		const stride = 2*4+3*4;
+		//0 => Position
+		gl.enableVertexAttribArray(0);
+		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+		//1 => Normal
+		gl.disableVertexAttribArray(1);
+		gl.vertexAttrib3f(1, 0.0, 0.0, 1.0);
+		//gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 3*4);
+		//2 => Color
+		gl.disableVertexAttribArray(2);
+		gl.vertexAttrib4f(2, 1.0, 1.0, 1.0, 1.0);
+		//gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 2*4);
+		//3 => TexCoord
+		gl.enableVertexAttribArray(3);
+		gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 2*4);
+
+		gl.bindTexture(gl.TEXTURE_2D, TEXTURES.text);
+
+
+		gl.drawArrays(gl.TRIANGLE_STRIP, 0, attribs.length/(stride/4));
+
+		gl.bindTexture(gl.TEXTURE_2D, null);
+	}
+
 }
 
 
@@ -986,6 +1157,9 @@ function keydown(evt) {
 	else if (evt.code === 'KeyQ') WORLD.limbs[2].grow = true;
 	else if (evt.code === 'KeyA') WORLD.limbs[3].grow = true;
 	else if (evt.code === 'KeyD') WORLD.limbs[4].grow = true;
+	else if (evt.code === 'KeyN') next();
+	else if (evt.code === 'KeyP') prev();
+	else if (evt.code === 'KeyR') reset();
 }
 
 function keyup(evt) {
@@ -998,3 +1172,77 @@ function keyup(evt) {
 
 window.addEventListener('keydown', keydown);
 window.addEventListener('keyup', keyup);
+
+const MOUSE = {x:NaN, y:NaN};
+
+//based (loosely) on amoeba-escape's mouse handling:
+function setMouse(evt) {
+	var rect = CANVAS.getBoundingClientRect();
+	MOUSE.x = (evt.clientX - rect.left) / rect.width;
+	MOUSE.y = (evt.clientY - rect.bottom) / -rect.height;
+
+	function inRect(name) {
+		return name in RECTS && (
+			RECTS[name].min[0] <= MOUSE.x && MOUSE.x <= RECTS[name].max[0]
+			&& RECTS[name].min[1] <= MOUSE.y && MOUSE.y <= RECTS[name].max[1]
+		);
+	}
+
+	MOUSE.overReset = inRect("reset");
+	MOUSE.overNext = inRect("next");
+	MOUSE.overPrev = inRect("prev");
+}
+
+function handleDown() {
+	if (MOUSE.overReset) {
+		reset();
+	} else if (MOUSE.overUndo) {
+		undo();
+	} else if (MOUSE.overNext) {
+		next();
+	} else if (MOUSE.overPrev) {
+		prev();
+	}
+}
+
+function handleUp() {
+}
+
+CANVAS.addEventListener('touchstart', function(evt){
+	evt.preventDefault();
+	setMouse(evt.touches[0]);
+	handleDown(evt.touches[0]);
+	return false;
+});
+CANVAS.addEventListener('touchmove', function(evt){
+	evt.preventDefault();
+	setMouse(evt.touches[0]);
+	return false;
+});
+CANVAS.addEventListener('touchend', function(evt){
+	handleUp();
+	mouse.x = NaN;
+	mouse.y = NaN;
+	return false;
+});
+
+window.addEventListener('mousemove', function(evt){
+	evt.preventDefault();
+	setMouse(evt);
+	return false;
+});
+window.addEventListener('mousedown', function(evt){
+	evt.preventDefault();
+	setMouse(evt);
+	handleDown(evt);
+	return false;
+});
+
+window.addEventListener('mouseup', function(evt){
+	evt.preventDefault();
+	setMouse(evt);
+	handleUp();
+	return false;
+});
+
+

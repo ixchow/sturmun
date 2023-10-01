@@ -48,4 +48,5 @@ TEXTURES.pending = 1;
 
 TEXTURES.load = function TEXTURES_load() {
 	TEXTURES.mun = loadTexture(gl, "mun.png");
+	TEXTURES.text = loadTexture(gl, "text.png");
 };
