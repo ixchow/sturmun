@@ -597,12 +597,19 @@ class World {
 				target.acc -= Math.floor(target.acc);
 				target.angle = Math.sin(target.acc * Math.PI * 2.0) * 0.2;
 
+				let wasCollected = false;
+
 				for (let i = 0; i < nextPositions.length; ++i) {
 					const pos = nextPositions[i];
 					if (target.check(pos)) {
 						target.collected = true;
+						wasCollected = true;
 						this.growToLength += 1;
 					}
+				}
+
+				if (wasCollected) {
+					AUDIO.collect.oneshot();
 				}
 			}
 		}
@@ -768,6 +775,18 @@ function update(elapsed) {
 	}
 
 	CAMERA.aspect = CANVAS.clientWidth / CANVAS.clientHeight;
+
+	if (!WORLD.won || currentLevel === 0) {
+		if (AUDIO.levelMusic.paused) {
+			AUDIO.levelMusic.forever();
+			AUDIO.danceMusic.pause();
+		}
+	} else {
+		if (AUDIO.danceMusic.paused) {
+			AUDIO.danceMusic.forever();
+			AUDIO.levelMusic.pause();
+		}
+	}
 
 	draw();
 
@@ -1194,6 +1213,7 @@ function queueUpdate() {
 queueUpdate();
 
 function keydown(evt) {
+	AUDIO.interacted = true;
 	if (evt.repeat) /* nothing */;
 	else if (evt.code === 'KeyE') WORLD.limbs[0].grow = true;
 	else if (evt.code === 'KeyW') WORLD.limbs[1].grow = true;
@@ -1239,6 +1259,7 @@ function setMouse(evt) {
 }
 
 function handleDown() {
+	AUDIO.interacted = true;
 	if (MOUSE.overReset) {
 		reset();
 	} else if (MOUSE.overUndo) {
